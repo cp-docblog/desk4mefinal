@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useContent } from '../hooks/useContent';
 import { supabase } from '../lib/supabase';
 import { useBooking } from '../contexts/BookingContext';
 import { Navigate } from 'react-router-dom';
@@ -15,6 +16,7 @@ import {
   Trash2,
   Phone,
   Mail,
+  Save,
   MessageCircle
 } from 'lucide-react';
 
@@ -39,6 +41,7 @@ interface Booking {
 const AdminDashboard: React.FC = () => {
   const { user } = useAuth();
   const { sendWebhook } = useBooking();
+  const { getSetting, updateSetting } = useContent();
   const [activeTab, setActiveTab] = useState('bookings');
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +52,13 @@ const AdminDashboard: React.FC = () => {
     pendingBookings: 0
   });
 
+  // Settings state
+  const [settingsData, setSettingsData] = useState({
+    totalDesks: '',
+    hourlySlots: ''
+  });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+
   if (!user || user.role !== 'admin') {
     return <Navigate to="/login" replace />;
   }
@@ -56,6 +66,12 @@ const AdminDashboard: React.FC = () => {
   useEffect(() => {
     fetchBookings();
     fetchStats();
+    loadSettings();
+  }, []);
+
+  // Load settings when getSetting is available
+  useEffect(() => {
+    loadSettings();
     
     // Set up real-time subscription for bookings
     const bookingsSubscription = supabase
@@ -94,7 +110,18 @@ const AdminDashboard: React.FC = () => {
     return () => {
       supabase.removeChannel(bookingsSubscription);
     };
-  }, []);
+  }, [getSetting]);
+
+  const loadSettings = () => {
+    setSettingsData({
+      totalDesks: getSetting('total_desks', '6'),
+      hourlySlots: getSetting('hourly_slots', '9:00 AM,10:00 AM,11:00 AM,12:00 PM,1:00 PM,2:00 PM,3:00 PM,4:00 PM,5:00 PM')
+    });
+  };
+
+  const handleSettingsChange = (field: string, value: string) => {
+    setSettingsData(prev => ({ ...prev, [field]: value }));
+  };
 
   const fetchBookings = async () => {
     try {
@@ -241,6 +268,36 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const saveSettings = async () => {
+    setSettingsSaving(true);
+    try {
+      // Validate total desks
+      const totalDesks = parseInt(settingsData.totalDesks);
+      if (isNaN(totalDesks) || totalDesks < 1) {
+        alert('Total desks must be a positive number');
+        return;
+      }
+
+      // Validate hourly slots
+      const slots = settingsData.hourlySlots.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      if (slots.length === 0) {
+        alert('Please provide at least one hourly slot');
+        return;
+      }
+
+      // Save settings
+      await updateSetting('total_desks', settingsData.totalDesks);
+      await updateSetting('hourly_slots', settingsData.hourlySlots);
+
+      alert('Settings saved successfully!');
+    } catch (error) {
+      console.error('Error saving settings:', error);
+      alert('Failed to save settings. Please try again.');
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
   const statsCards = [
     {
       title: 'Total Bookings',
@@ -341,6 +398,16 @@ const AdminDashboard: React.FC = () => {
                 }`}
               >
                 Analytics
+              </button>
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'settings'
+                    ? 'border-yellow-500 text-yellow-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                Settings
               </button>
             </nav>
           </div>
@@ -482,6 +549,84 @@ const AdminDashboard: React.FC = () => {
               <div>
                 <h3 className="text-lg font-medium text-gray-900 mb-4">Analytics & Reports</h3>
                 <p className="text-gray-600">Advanced analytics features coming soon...</p>
+              </div>
+            )}
+
+            {activeTab === 'settings' && (
+              <div>
+                <h3 className="text-lg font-medium text-gray-900 mb-6">Booking System Settings</h3>
+                
+                <div className="space-y-6">
+                  {/* Total Desks Setting */}
+                  <div className="bg-gray-50 p-6 rounded-lg">
+                    <h4 className="text-md font-semibold text-gray-900 mb-3">Total Number of Desks</h4>
+                    <p className="text-sm text-gray-600 mb-3">
+                      Set the total number of desks available for booking. This affects how many simultaneous bookings can be made for the same time slot.
+                    </p>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={settingsData.totalDesks}
+                      onChange={(e) => handleSettingsChange('totalDesks', e.target.value)}
+                      className="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500"
+                      placeholder="6"
+                    />
+                    <span className="ml-2 text-sm text-gray-500">desks</span>
+                  </div>
+
+                  {/* Hourly Slots Setting */}
+                  <div className="bg-gray-50 p-6 rounded-lg">
+                    <h4 className="text-md font-semibold text-gray-900 mb-3">Available Hourly Time Slots</h4>
+                    <p className="text-sm text-gray-600 mb-3">
+                      Define the available hourly time slots for booking. Enter each time slot separated by commas.
+                      Example: 9:00 AM,10:00 AM,11:00 AM,12:00 PM,1:00 PM
+                    </p>
+                    <textarea
+                      rows={4}
+                      value={settingsData.hourlySlots}
+                      onChange={(e) => handleSettingsChange('hourlySlots', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500"
+                      placeholder="9:00 AM,10:00 AM,11:00 AM,12:00 PM,1:00 PM,2:00 PM,3:00 PM,4:00 PM,5:00 PM"
+                    />
+                    <div className="mt-2 text-xs text-gray-500">
+                      Current slots: {settingsData.hourlySlots.split(',').map(s => s.trim()).filter(s => s.length > 0).length} slots
+                    </div>
+                  </div>
+
+                  {/* Save Button */}
+                  <div className="flex justify-end">
+                    <button
+                      onClick={saveSettings}
+                      disabled={settingsSaving}
+                      className="bg-yellow-500 text-black px-6 py-2 rounded-md font-semibold hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                    >
+                      {settingsSaving ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-black mr-2"></div>
+                          Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4 mr-2" />
+                          Save Settings
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Warning Notice */}
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex">
+                      <div className="ml-3">
+                        <h3 className="text-sm font-medium text-yellow-800">Important Notice</h3>
+                        <div className="mt-2 text-sm text-yellow-700">
+                          <p>Changes to these settings will affect future bookings. Existing bookings will remain unchanged. Please ensure you understand the impact before making changes.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>

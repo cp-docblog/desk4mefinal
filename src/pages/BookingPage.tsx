@@ -10,16 +10,16 @@ import AnimatedSection from '../components/AnimatedSection';
 import LoadingSpinner from '../components/LoadingSpinner';
 import AuthModal from '../components/AuthModal';
 
-// Constants for booking logic
-const ALL_HOURLY_SLOTS = [
+// Default fallback values for booking logic
+const DEFAULT_HOURLY_SLOTS = [
   '9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM',
   '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'
 ];
 
-const TOTAL_DESKS = 2;
+const DEFAULT_TOTAL_DESKS = 6;
 
 // Helper function to convert duration to hours
-const convertDurationToHours = (duration: string): number => {
+const convertDurationToHours = (duration: string, totalSlots: number): number => {
   switch (duration) {
     case '1-hour':
       return 1;
@@ -28,24 +28,24 @@ const convertDurationToHours = (duration: string): number => {
     case '4-hours':
       return 4;
     case '1-day':
-      return ALL_HOURLY_SLOTS.length; // Full day = all available hourly slots
+      return totalSlots; // Full day = all available hourly slots
     case '1-week':
-      return ALL_HOURLY_SLOTS.length * 7; // Not applicable for hourly slots, but kept for consistency
+      return totalSlots * 7; // Not applicable for hourly slots, but kept for consistency
     case '1-month':
-      return ALL_HOURLY_SLOTS.length * 30; // Not applicable for hourly slots, but kept for consistency
+      return totalSlots * 30; // Not applicable for hourly slots, but kept for consistency
     default:
       return 1;
   }
 };
 
 // Helper function to get hourly slots covered by a booking
-const getHourlySlotsForBooking = (startSlot: string, durationHours: number): string[] => {
-  const startIndex = ALL_HOURLY_SLOTS.indexOf(startSlot);
+const getHourlySlotsForBooking = (startSlot: string, durationHours: number, allSlots: string[]): string[] => {
+  const startIndex = allSlots.indexOf(startSlot);
   if (startIndex === -1) return [];
   
   const slots = [];
-  for (let i = 0; i < durationHours && (startIndex + i) < ALL_HOURLY_SLOTS.length; i++) {
-    slots.push(ALL_HOURLY_SLOTS[startIndex + i]);
+  for (let i = 0; i < durationHours && (startIndex + i) < allSlots.length; i++) {
+    slots.push(allSlots[startIndex + i]);
   }
   return slots;
 };
@@ -64,7 +64,8 @@ const BookingPage: React.FC = () => {
   const navigate = useNavigate();
   const { setBookingData } = useBooking();
   const { user } = useAuth();
-  const { getContent, loading: contentLoading } = useContent();
+  const { getContent, getSetting, loading: contentLoading } = useContent();
+  
   const [workspaceTypes, setWorkspaceTypes] = useState<WorkspaceType[]>([]);
   const [loading, setLoading] = useState(true);
   const [bookedSlots, setBookedSlots] = useState<string[]>([]);
@@ -81,6 +82,13 @@ const BookingPage: React.FC = () => {
     customerPhone: '',
     customerWhatsapp: ''
   });
+
+  // Get dynamic settings
+  const totalDesks = parseInt(getSetting('total_desks', DEFAULT_TOTAL_DESKS.toString()));
+  const hourlySlots = getSetting('hourly_slots', DEFAULT_HOURLY_SLOTS.join(','))
+    .split(',')
+    .map(slot => slot.trim())
+    .filter(slot => slot.length > 0);
 
   useEffect(() => {
     fetchWorkspaceTypes();
@@ -125,25 +133,25 @@ const BookingPage: React.FC = () => {
       if (error) throw error;
 
       const bookings = data || [];
-      const requestedDurationHours = convertDurationToHours(formData.duration);
+      const requestedDurationHours = convertDurationToHours(formData.duration, hourlySlots.length);
       
       // Build desk availability matrix
       const deskAvailabilityMatrix = new Map<string, boolean[]>();
       
       // Initialize all slots as available for all desks
-      ALL_HOURLY_SLOTS.forEach(slot => {
-        deskAvailabilityMatrix.set(slot, new Array(TOTAL_DESKS).fill(true));
+      hourlySlots.forEach(slot => {
+        deskAvailabilityMatrix.set(slot, new Array(totalDesks).fill(true));
       });
       
       // Mark desks as unavailable based on existing bookings
       bookings.forEach(booking => {
-        const bookingDurationHours = convertDurationToHours(booking.duration);
-        const occupiedSlots = getHourlySlotsForBooking(booking.time_slot, bookingDurationHours);
+        const bookingDurationHours = convertDurationToHours(booking.duration, hourlySlots.length);
+        const occupiedSlots = getHourlySlotsForBooking(booking.time_slot, bookingDurationHours, hourlySlots);
         
         occupiedSlots.forEach(slot => {
           const availability = deskAvailabilityMatrix.get(slot);
           if (availability) {
-            if (booking.desk_number !== null && booking.desk_number >= 1 && booking.desk_number <= TOTAL_DESKS) {
+            if (booking.desk_number !== null && booking.desk_number >= 1 && booking.desk_number <= totalDesks) {
               // Mark specific desk as unavailable
               availability[booking.desk_number - 1] = false;
             } else {
@@ -157,8 +165,8 @@ const BookingPage: React.FC = () => {
       // Find unavailable starting slots for the requested duration
       const unavailableSlots: string[] = [];
       
-      ALL_HOURLY_SLOTS.forEach(startSlot => {
-        const requiredSlots = getHourlySlotsForBooking(startSlot, requestedDurationHours);
+      hourlySlots.forEach(startSlot => {
+        const requiredSlots = getHourlySlotsForBooking(startSlot, requestedDurationHours, hourlySlots);
         
         // Check if we have enough consecutive slots
         if (requiredSlots.length < requestedDurationHours) {
@@ -169,7 +177,7 @@ const BookingPage: React.FC = () => {
         // Check if at least one desk is available for all required slots
         let hasAvailableDesk = false;
         
-        for (let deskIndex = 0; deskIndex < TOTAL_DESKS; deskIndex++) {
+        for (let deskIndex = 0; deskIndex < totalDesks; deskIndex++) {
           let deskAvailableForAllSlots = true;
           
           for (const slot of requiredSlots) {
@@ -247,26 +255,26 @@ const BookingPage: React.FC = () => {
       if (fetchError) throw fetchError;
 
       const bookings = existingBookings || [];
-      const requestedDurationHours = convertDurationToHours(bookingData.duration);
-      const requiredSlots = getHourlySlotsForBooking(bookingData.timeSlot, requestedDurationHours);
+      const requestedDurationHours = convertDurationToHours(bookingData.duration, hourlySlots.length);
+      const requiredSlots = getHourlySlotsForBooking(bookingData.timeSlot, requestedDurationHours, hourlySlots);
       
       // Build desk availability matrix
       const deskAvailabilityMatrix = new Map<string, boolean[]>();
       
       // Initialize all slots as available for all desks
-      ALL_HOURLY_SLOTS.forEach(slot => {
-        deskAvailabilityMatrix.set(slot, new Array(TOTAL_DESKS).fill(true));
+      hourlySlots.forEach(slot => {
+        deskAvailabilityMatrix.set(slot, new Array(totalDesks).fill(true));
       });
       
       // Mark desks as unavailable based on existing bookings
       bookings.forEach(booking => {
-        const bookingDurationHours = convertDurationToHours(booking.duration);
-        const occupiedSlots = getHourlySlotsForBooking(booking.time_slot, bookingDurationHours);
+        const bookingDurationHours = convertDurationToHours(booking.duration, hourlySlots.length);
+        const occupiedSlots = getHourlySlotsForBooking(booking.time_slot, bookingDurationHours, hourlySlots);
         
         occupiedSlots.forEach(slot => {
           const availability = deskAvailabilityMatrix.get(slot);
           if (availability) {
-            if (booking.desk_number !== null && booking.desk_number >= 1 && booking.desk_number <= TOTAL_DESKS) {
+            if (booking.desk_number !== null && booking.desk_number >= 1 && booking.desk_number <= totalDesks) {
               // Mark specific desk as unavailable
               availability[booking.desk_number - 1] = false;
             } else {
@@ -280,7 +288,7 @@ const BookingPage: React.FC = () => {
       // Find an available desk for the entire duration
       let assignedDeskNumber = null;
       
-      for (let deskIndex = 0; deskIndex < TOTAL_DESKS; deskIndex++) {
+      for (let deskIndex = 0; deskIndex < totalDesks; deskIndex++) {
         let deskAvailableForAllSlots = true;
         
         for (const slot of requiredSlots) {
@@ -516,7 +524,7 @@ const BookingPage: React.FC = () => {
                           Unavailable slots: {bookedSlots.join(', ')}
                         </p>
                       )}
-                      {formData.workspaceType && formData.date && formData.duration && bookedSlots.length === ALL_HOURLY_SLOTS.length && (
+                      {formData.workspaceType && formData.date && formData.duration && bookedSlots.length === hourlySlots.length && (
                         <p className="text-sm text-red-500 mt-1">
                           No available slots for this date. Please choose a different date.
                         </p>
@@ -571,7 +579,7 @@ const BookingPage: React.FC = () => {
                           : 'Choose available time slot'
                         }
                       </option>
-                      {ALL_HOURLY_SLOTS
+                      {hourlySlots
                         .filter(slot => !bookedSlots.includes(slot))
                         .map((slot) => (
                           <option key={slot} value={slot}>{slot}</option>
