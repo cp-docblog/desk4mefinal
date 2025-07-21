@@ -16,7 +16,7 @@ const ALL_HOURLY_SLOTS = [
   '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'
 ];
 
-const TOTAL_DESKS = 6;
+const TOTAL_DESKS = 2;
 
 // Helper function to convert duration to hours
 const convertDurationToHours = (duration: string): number => {
