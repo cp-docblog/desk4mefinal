@@ -10,6 +10,46 @@ import AnimatedSection from '../components/AnimatedSection';
 import LoadingSpinner from '../components/LoadingSpinner';
 import AuthModal from '../components/AuthModal';
 
+// Constants for booking logic
+const ALL_HOURLY_SLOTS = [
+  '9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM',
+  '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'
+];
+
+const TOTAL_DESKS = 6;
+
+// Helper function to convert duration to hours
+const convertDurationToHours = (duration: string): number => {
+  switch (duration) {
+    case '1-hour':
+      return 1;
+    case '2-hours':
+      return 2;
+    case '4-hours':
+      return 4;
+    case '1-day':
+      return ALL_HOURLY_SLOTS.length; // Full day = all available hourly slots
+    case '1-week':
+      return ALL_HOURLY_SLOTS.length * 7; // Not applicable for hourly slots, but kept for consistency
+    case '1-month':
+      return ALL_HOURLY_SLOTS.length * 30; // Not applicable for hourly slots, but kept for consistency
+    default:
+      return 1;
+  }
+};
+
+// Helper function to get hourly slots covered by a booking
+const getHourlySlotsForBooking = (startSlot: string, durationHours: number): string[] => {
+  const startIndex = ALL_HOURLY_SLOTS.indexOf(startSlot);
+  if (startIndex === -1) return [];
+  
+  const slots = [];
+  for (let i = 0; i < durationHours && (startIndex + i) < ALL_HOURLY_SLOTS.length; i++) {
+    slots.push(ALL_HOURLY_SLOTS[startIndex + i]);
+  }
+  return slots;
+};
+
 interface WorkspaceType {
   id: string;
   name: string;
@@ -48,12 +88,12 @@ const BookingPage: React.FC = () => {
 
   // Fetch booked slots when workspace type or date changes
   useEffect(() => {
-    if (formData.workspaceType && formData.date) {
+    if (formData.workspaceType && formData.date && formData.duration) {
       fetchBookedSlots();
     } else {
       setBookedSlots([]);
     }
-  }, [formData.workspaceType, formData.date]);
+  }, [formData.workspaceType, formData.date, formData.duration]);
 
   const fetchWorkspaceTypes = async () => {
     try {
@@ -77,15 +117,81 @@ const BookingPage: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('bookings')
-        .select('time_slot')
+        .select('time_slot, duration, desk_number')
         .eq('workspace_type', formData.workspaceType)
         .eq('date', formData.date)
-        .in('status', ['pending', 'confirmed']);
+        .in('status', ['pending', 'confirmed', 'code_sent']);
 
       if (error) throw error;
 
-      const slots = data?.map(booking => booking.time_slot) || [];
-      setBookedSlots(slots);
+      const bookings = data || [];
+      const requestedDurationHours = convertDurationToHours(formData.duration);
+      
+      // Build desk availability matrix
+      const deskAvailabilityMatrix = new Map<string, boolean[]>();
+      
+      // Initialize all slots as available for all desks
+      ALL_HOURLY_SLOTS.forEach(slot => {
+        deskAvailabilityMatrix.set(slot, new Array(TOTAL_DESKS).fill(true));
+      });
+      
+      // Mark desks as unavailable based on existing bookings
+      bookings.forEach(booking => {
+        const bookingDurationHours = convertDurationToHours(booking.duration);
+        const occupiedSlots = getHourlySlotsForBooking(booking.time_slot, bookingDurationHours);
+        
+        occupiedSlots.forEach(slot => {
+          const availability = deskAvailabilityMatrix.get(slot);
+          if (availability) {
+            if (booking.desk_number !== null && booking.desk_number >= 1 && booking.desk_number <= TOTAL_DESKS) {
+              // Mark specific desk as unavailable
+              availability[booking.desk_number - 1] = false;
+            } else {
+              // Legacy booking without desk assignment - mark all desks as unavailable
+              availability.fill(false);
+            }
+          }
+        });
+      });
+      
+      // Find unavailable starting slots for the requested duration
+      const unavailableSlots: string[] = [];
+      
+      ALL_HOURLY_SLOTS.forEach(startSlot => {
+        const requiredSlots = getHourlySlotsForBooking(startSlot, requestedDurationHours);
+        
+        // Check if we have enough consecutive slots
+        if (requiredSlots.length < requestedDurationHours) {
+          unavailableSlots.push(startSlot);
+          return;
+        }
+        
+        // Check if at least one desk is available for all required slots
+        let hasAvailableDesk = false;
+        
+        for (let deskIndex = 0; deskIndex < TOTAL_DESKS; deskIndex++) {
+          let deskAvailableForAllSlots = true;
+          
+          for (const slot of requiredSlots) {
+            const availability = deskAvailabilityMatrix.get(slot);
+            if (!availability || !availability[deskIndex]) {
+              deskAvailableForAllSlots = false;
+              break;
+            }
+          }
+          
+          if (deskAvailableForAllSlots) {
+            hasAvailableDesk = true;
+            break;
+          }
+        }
+        
+        if (!hasAvailableDesk) {
+          unavailableSlots.push(startSlot);
+        }
+      });
+      
+      setBookedSlots(unavailableSlots);
     } catch (error) {
       console.error('Error fetching booked slots:', error);
       setBookedSlots([]);
@@ -93,11 +199,6 @@ const BookingPage: React.FC = () => {
       setCheckingAvailability(false);
     }
   };
-
-  const timeSlots = [
-    '9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM',
-    '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'
-  ];
 
   const durations = [
     { value: '1-hour', label: '1 Hour', multiplier: 1 },
@@ -118,6 +219,13 @@ const BookingPage: React.FC = () => {
         [name]: value,
         timeSlot: '' // Reset time slot when workspace or date changes
       }));
+    } else if (name === 'duration' && formData.timeSlot) {
+      // Reset time slot if duration changes
+      setFormData(prev => ({
+        ...prev,
+        [name]: value,
+        timeSlot: '' // Reset time slot when duration changes
+      }));
     } else {
       setFormData(prev => ({
         ...prev,
@@ -128,6 +236,71 @@ const BookingPage: React.FC = () => {
 
    const saveBookingToDatabase = async (bookingData: any) => {
     try {
+      // Find an available desk for the booking
+      const { data: existingBookings, error: fetchError } = await supabase
+        .from('bookings')
+        .select('time_slot, duration, desk_number')
+        .eq('workspace_type', bookingData.workspaceType)
+        .eq('date', bookingData.date)
+        .in('status', ['pending', 'confirmed', 'code_sent']);
+
+      if (fetchError) throw fetchError;
+
+      const bookings = existingBookings || [];
+      const requestedDurationHours = convertDurationToHours(bookingData.duration);
+      const requiredSlots = getHourlySlotsForBooking(bookingData.timeSlot, requestedDurationHours);
+      
+      // Build desk availability matrix
+      const deskAvailabilityMatrix = new Map<string, boolean[]>();
+      
+      // Initialize all slots as available for all desks
+      ALL_HOURLY_SLOTS.forEach(slot => {
+        deskAvailabilityMatrix.set(slot, new Array(TOTAL_DESKS).fill(true));
+      });
+      
+      // Mark desks as unavailable based on existing bookings
+      bookings.forEach(booking => {
+        const bookingDurationHours = convertDurationToHours(booking.duration);
+        const occupiedSlots = getHourlySlotsForBooking(booking.time_slot, bookingDurationHours);
+        
+        occupiedSlots.forEach(slot => {
+          const availability = deskAvailabilityMatrix.get(slot);
+          if (availability) {
+            if (booking.desk_number !== null && booking.desk_number >= 1 && booking.desk_number <= TOTAL_DESKS) {
+              // Mark specific desk as unavailable
+              availability[booking.desk_number - 1] = false;
+            } else {
+              // Legacy booking without desk assignment - mark all desks as unavailable
+              availability.fill(false);
+            }
+          }
+        });
+      });
+      
+      // Find an available desk for the entire duration
+      let assignedDeskNumber = null;
+      
+      for (let deskIndex = 0; deskIndex < TOTAL_DESKS; deskIndex++) {
+        let deskAvailableForAllSlots = true;
+        
+        for (const slot of requiredSlots) {
+          const availability = deskAvailabilityMatrix.get(slot);
+          if (!availability || !availability[deskIndex]) {
+            deskAvailableForAllSlots = false;
+            break;
+          }
+        }
+        
+        if (deskAvailableForAllSlots) {
+          assignedDeskNumber = deskIndex + 1; // Desk numbers are 1-indexed
+          break;
+        }
+      }
+      
+      if (!assignedDeskNumber) {
+        throw new Error('No available desk found for the selected time slot and duration. Please choose a different time or date.');
+      }
+
       const { data, error } = await supabase
         .from('bookings')
         .insert({
@@ -141,7 +314,8 @@ const BookingPage: React.FC = () => {
           customer_whatsapp: bookingData.customerWhatsapp,
           total_price: bookingData.totalPrice,
           status: 'pending',
-          user_id: user?.id || null
+          user_id: user?.id || null,
+          desk_number: assignedDeskNumber
         })
         .select()
         .single();
@@ -313,36 +487,36 @@ const BookingPage: React.FC = () => {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         <Clock className="w-4 h-4 inline mr-2" />
-                        Select Time {checkingAvailability && <span className="text-yellow-500">(Checking availability...)</span>}
+                        Select Time Slot {checkingAvailability && <span className="text-yellow-500">(Checking availability...)</span>}
                       </label>
                       <select
                         name="timeSlot"
                         value={formData.timeSlot}
                         onChange={handleChange}
                         required
-                        disabled={!formData.workspaceType || !formData.date || checkingAvailability}
+                        disabled={!formData.workspaceType || !formData.date || !formData.duration || checkingAvailability}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500 transition-all duration-300"
                       >
                         <option value="">
-                          {!formData.workspaceType || !formData.date 
-                            ? 'Select workspace and date first' 
+                          {!formData.workspaceType || !formData.date || !formData.duration
+                            ? 'Select workspace, date, and duration first' 
                             : checkingAvailability 
                             ? 'Checking availability...' 
                             : 'Choose available time slot'
                           }
                         </option>
-                        {timeSlots
+                        {ALL_HOURLY_SLOTS
                           .filter(slot => !bookedSlots.includes(slot))
                           .map((slot) => (
                             <option key={slot} value={slot}>{slot}</option>
                           ))}
                       </select>
-                      {formData.workspaceType && formData.date && bookedSlots.length > 0 && (
+                      {formData.workspaceType && formData.date && formData.duration && bookedSlots.length > 0 && (
                         <p className="text-sm text-gray-500 mt-1">
                           Unavailable slots: {bookedSlots.join(', ')}
                         </p>
                       )}
-                      {formData.workspaceType && formData.date && bookedSlots.length === timeSlots.length && (
+                      {formData.workspaceType && formData.date && formData.duration && bookedSlots.length === ALL_HOURLY_SLOTS.length && (
                         <p className="text-sm text-red-500 mt-1">
                           No available slots for this date. Please choose a different date.
                         </p>
@@ -374,8 +548,50 @@ const BookingPage: React.FC = () => {
                   </div>
                 </AnimatedSection>
 
+                {/* Time Selection - moved after duration */}
+                <AnimatedSection animation="slideUp" delay={700} duration={600}>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      <Clock className="w-4 h-4 inline mr-2" />
+                      Select Time Slot {checkingAvailability && <span className="text-yellow-500">(Checking availability...)</span>}
+                    </label>
+                    <select
+                      name="timeSlot"
+                      value={formData.timeSlot}
+                      onChange={handleChange}
+                      required
+                      disabled={!formData.workspaceType || !formData.date || !formData.duration || checkingAvailability}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500 transition-all duration-300"
+                    >
+                      <option value="">
+                        {!formData.workspaceType || !formData.date || !formData.duration
+                          ? 'Select workspace, date, and duration first' 
+                          : checkingAvailability 
+                          ? 'Checking availability...' 
+                          : 'Choose available time slot'
+                        }
+                      </option>
+                      {ALL_HOURLY_SLOTS
+                        .filter(slot => !bookedSlots.includes(slot))
+                        .map((slot) => (
+                          <option key={slot} value={slot}>{slot}</option>
+                        ))}
+                    </select>
+                    {formData.workspaceType && formData.date && formData.duration && bookedSlots.length > 0 && (
+                      <p className="text-sm text-gray-500 mt-1">
+                        Unavailable slots for {formData.duration}: {bookedSlots.join(', ')}
+                      </p>
+                    )}
+                    {formData.workspaceType && formData.date && formData.duration && bookedSlots.length === ALL_HOURLY_SLOTS.length && (
+                      <p className="text-sm text-red-500 mt-1">
+                        No available slots for this date and duration. Please choose a different date or shorter duration.
+                      </p>
+                    )}
+                  </div>
+                </AnimatedSection>
+
                 {/* Customer Information */}
-                <AnimatedSection animation="slideUp" delay={800} duration={600}>
+                <AnimatedSection animation="slideUp" delay={900} duration={600}>
                   <div>
                     <h3 className="text-xl font-semibold text-black mb-4">
                       {getContent('booking_contact_title', 'Contact Information')}
@@ -446,19 +662,26 @@ const BookingPage: React.FC = () => {
 
                 {/* Price Summary */}
                 {formData.workspaceType && formData.duration && (
-                  <AnimatedSection animation="slideUp" delay={1000} duration={600}>
+                  <AnimatedSection animation="slideUp" delay={1100} duration={600}>
                     <div className="bg-gray-50 p-6 rounded-lg">
                       <h3 className="text-lg font-semibold text-black mb-2">Price Summary</h3>
                       <div className="flex justify-between items-center">
                         <span className="text-gray-600">Total Cost:</span>
                         <span className="text-2xl font-bold text-yellow-600">E£{calculatePrice()}</span>
                       </div>
+                      {formData.timeSlot && (
+                        <div className="mt-2 text-sm text-gray-600">
+                          <p>Workspace: {formData.workspaceType}</p>
+                          <p>Duration: {durations.find(d => d.value === formData.duration)?.label}</p>
+                          <p>Time: {formData.timeSlot}</p>
+                        </div>
+                      )}
                     </div>
                   </AnimatedSection>
                 )}
 
                 {/* Submit Button */}
-                <AnimatedSection animation="slideUp" delay={1200} duration={600}>
+                <AnimatedSection animation="slideUp" delay={1300} duration={600}>
                   <div className="text-center">
                     {!user ? (
                       <div className="space-y-4">
