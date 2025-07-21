@@ -513,7 +513,7 @@ const BookingPage: React.FC = () => {
                             : 'Choose available time slot'
                           }
                         </option>
-                        {ALL_HOURLY_SLOTS
+                        {hourlySlots
                           .filter(slot => !bookedSlots.includes(slot))
                           .map((slot) => (
                             <option key={slot} value={slot}>{slot}</option>
