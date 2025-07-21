@@ -590,7 +590,7 @@ const BookingPage: React.FC = () => {
                         Unavailable slots for {formData.duration}: {bookedSlots.join(', ')}
                       </p>
                     )}
-                    {formData.workspaceType && formData.date && formData.duration && bookedSlots.length === ALL_HOURLY_SLOTS.length && (
+                    {formData.workspaceType && formData.date && formData.duration && bookedSlots.length === hourlySlots.length && (
                       <p className="text-sm text-red-500 mt-1">
                         No available slots for this date and duration. Please choose a different date or shorter duration.
                       </p>
